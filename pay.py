@@ -1,87 +1,179 @@
 TD_ACCOUNT_NO = '012345678'
 LAST_FOUR_SSN = '1234'
 NAME = 'john smith'
-ADDRESS = '99 main street'
-CITY = 'new york'
-STATE = 'NY'
-ZIP = '11011'
 ROUTING_NO = '987654321'
 CHECKING_ACCT = '123456789'
-PAYMENT_AMT = '9999.99'
+PAYMENT_AMT = 9999.99
 EMAIL = 'foo@email.com'
+BANK_NAME = 'MY BANK'.upper()
 
-#########################################
-#########################################
-#########################################
+'''
+XXXXXXXXXXXXXXX
+X| .........\XX
+XXX| @ XXX\  XX
+XXX| @ XXXX| XX
+XXX| @ XXX/  XX
+XXX| @      /XX
+XXXXXXXXXXXXXXX
+XXXXXXXXXXXXXXX
+'''
 
+#region Setup
 import requests
 from bs4 import BeautifulSoup
+import re
+import json
 import datetime
-# from functools import reduce
+import logging
 
-url = 'https://securepay.tdbank.com/cgi/tdbankExpress-bin/vortex.cgi'
+logging.basicConfig(level=logging.DEBUG)
 
-def get_hidden_inputs(html):
-	soup = BeautifulSoup(html, features="html.parser")
-	hidden = {i['name']: i['value'] for i in soup.find('form', {'name': 'payment'}).find_all('input', type='hidden')}
-	return hidden
+s = requests.Session()
 
-def get_AcctValidate_form():
-	form = {
-		'Action': 'AcctValidate',
-		'acct_num': TD_ACCOUNT_NO,
-		'loginvar1': LAST_FOUR_SSN,
-		'loginvar2': 'ML' # Mortgage Loan
-	}
+PAYMENT_DATE = '{dt.month}/{dt.day}/{dt.year}'.format(dt=datetime.datetime.now())
+#endregion
 
-	response = requests.get(url, params=form)
-	response.raise_for_status()
-	return response.text
+#region Login
+url = 'https://tdbank.billeriq.com/ebpp/TDUSPAYMENTS/Login/PayAsGuest'
+data = {
+    'BillerID': '3435',
+    'AccountNumber': TD_ACCOUNT_NO,
+    'PIN': LAST_FOUR_SSN
+}
+response = s.post(url, data=data)
+#endregion
 
-def post_ValidatePaymentInfo_form(inputs):
-	inputs['Action'] = 'ValidatePaymentInfo'
-	inputs['ec_subtype'] = 'C' # Checking
-	inputs['ec_name1'] = NAME
-	inputs['ec_addr1'] = ADDRESS
-	inputs['ec_addr2'] = ''
-	inputs['ec_city'] = CITY
-	inputs['ec_state'] = STATE
-	inputs['ec_zip'] = ZIP
-	inputs['ec_aba'] = ROUTING_NO
-	inputs['verify_ec_aba'] = ROUTING_NO
-	inputs['ec_fund_acct_num'] = CHECKING_ACCT
-	inputs['verify_ec_fund_acct_num'] = CHECKING_ACCT
-	inputs['pmtdate1'] = '{dt.month}/{dt.day}/{dt.year}'.format(dt=datetime.datetime.now())
-	inputs['ec_amt1'] = PAYMENT_AMT
+#region IDs
+url = 'https://tdbank.billeriq.com/ebpp/TDUSPAYMENTS/BillPay'
+response = s.get(url)
 
-	response = requests.post(url, data=inputs)
-	response.raise_for_status()
-	return response.text
+soup = BeautifulSoup(response.content)
+invoice_row = soup.find('div', id=re.compile(r'^invoice-row-\d+$'))
+invoice_id = invoice_row['data-id']
+billing_account = invoice_row['data-billingaccount']
+#endregion
 
-def post_ConfirmPaymentInfo_form(inputs):
-	inputs['Action'] = 'ConfirmPaymentInfo'
+#region AddPaymentMethod
+url = 'https://tdbank.billeriq.com/ebpp/TDUSPAYMENTS/PaymentAccount/AddPaymentMethodACH?forPayment=true'
+data = {
+    'ID' : 0,
+    'AchUsageType' : 'Personal',
+    'AchType' : 'Checking',
+    'IsDescriptionRequired' : 'False',
+    'Name' : NAME,
+    'AchRoutingNumber' : ROUTING_NO,
+    'AchBankName' : BANK_NAME,
+    'AchAccountNumber' : CHECKING_ACCT,
+    'AchAccountNumberConfirm' : CHECKING_ACCT,
+    'AchAgree' : 'true',
+    'AchAgree' : 'false'
+}
+response = s.post(url, data=data)
+#endregion
 
-	response = requests.post(url, data=inputs)
-	response.raise_for_status()
-	return response.text
+#region CalculateTotal
+url = 'https://tdbank.billeriq.com/ebpp/TDUSPAYMENTS/Payment/BillPayCalculateTotal'
+selection = {
+    invoice_id: {
+        'Amount': PAYMENT_AMT,
+        'a': billing_account,
+        'CreditMemo': False,
+        'DefaultPayment': PAYMENT_AMT,
+        's': True,
+        'ServerSelected': False,
+        'ReasonText': '',
+        'DecryptedReferenceNumber': CHECKING_ACCT,
+        'AdditionalFields': {}
+    }
+}
+data = {
+    'Selection': json.dumps(selection),
+    'AccountAddOnSeclection': '',
+    'AccountAddOnAmount': '0',
+    'AccountAddOnLabel': '',
+    'UserLevelAddonSelection': 'null',
+    'PaymentAccountIndex': '0',
+    'CVVCode': '',
+    'PaymentDate': PAYMENT_DATE
+}
+response = s.post(url, data=data)
+#endregion
 
-def post_SendEmail_form(inputs):
-	inputs['Action'] = 'SendEmail'
-	inputs['email'] = EMAIL
-	
-	response = requests.post(url, data=inputs)
-	response.raise_for_status()
-	return response.text
+#region BillPay
+url = 'https://tdbank.billeriq.com/ebpp/TDUSPAYMENTS/Payment/BillPay'
+response = s.post(url, data=data)
+#endregion
 
-if __name__ == "__main__":
-	print('gettting initial form')
-	html = get_AcctValidate_form()
-	print('posting validate payment form')
-	html = post_ValidatePaymentInfo_form(get_hidden_inputs(html))
-	print('posting confirm payment form')
-	html = post_ConfirmPaymentInfo_form(get_hidden_inputs(html))
-	print('posting send email form')
-	html = post_SendEmail_form(get_hidden_inputs(html))
-	print('done')	
-	
-	#reduce(lambda html, func: func(get_hidden_inputs(html)), [post_ValidatePaymentInfo_form, post_ConfirmPaymentInfo_form, post_SendEmail_form], get_AcctValidate_form())
+#region VerifyAccountTotal
+url = 'https://tdbank.billeriq.com/ebpp/TDUSPAYMENTS/Payment/VerifyAccountTotal'
+data = {
+    'Selection': '{}',
+    'SkipDuplicate': '',
+    'SkipFDPCheck': '',
+    'SkipSupervisorApprovalCheck': '',
+    'ApprovedByUserID': '',
+    'SourcePage': 'BillPay',
+    'AddOnAmount': '0',
+    'AddOnAccount': '',
+    'AccountAddOnAmount': '0',
+    'AccountAddOnAccountLabel': '',
+    'IsPPD': 'False',
+    'UserlevelAddonSelection': '',
+    'MailPaymentConfirmation': 'False',
+    'EmailPaymentConfirmation': 'False',
+    'MailConfirmationDelivery': '',
+    'PaymentAccountIndex': '0',
+    'CVVCode': '',
+    'PaymentDate': PAYMENT_DATE
+}
+response = s.post(url, data=data)
+#endregion
+
+#region VerifyCalculateTotal
+url = 'https://tdbank.billeriq.com/ebpp/TDUSPAYMENTS/Payment/VerifyCalculateTotal'
+response = s.post(url, data=data)
+#endregion
+
+#region Confirm
+url = 'https://tdbank.billeriq.com/ebpp/TDUSPAYMENTS/Payment/Confirm'
+data = {
+    'Selection': '{}',
+    'SkipDuplicate': 'False',
+    'SkipFDPCheck': 'False',
+    'SkipSupervisorApprovalCheck': 'False',
+    'ApprovedByUserID':'',
+    'SourcePage': 'BillPay',
+    'AddOnAmount': '0',
+    'AddOnAccount': '',
+    'AccountAddOnAmount': '0',
+    'AccountAddOnAccountLabel': '',
+    'IsPPD': 'False',
+    'UserlevelAddonSelection': '{}',
+    'MailPaymentConfirmation': 'False',
+    'EmailPaymentConfirmation': 'True',
+    'MailConfirmationDelivery': 'Email',
+    'PaymentAccountIndex': '0',
+    'CVVCode': '',
+    'PaymentDate': PAYMENT_DATE,
+    'CompanyName': NAME,
+    'Email': EMAIL,
+    'MailConfirmationDelivery': 'Email',
+    'CustomerMailing.MailingEmail': EMAIL,
+    'CompanyName': NAME,
+    'MobilePhone': '',
+    'Email': EMAIL,
+    'CustomerMailing.MailingCompanyName': '',
+    'CustomerMailing.MailingEmail': '',
+    'CustomerMailing.MailingCountry': 'USA',
+    'CustomerMailing.MailingAddress': '',
+    'CustomerMailing.MailingAddress2': '',
+    'CustomerMailing.MailingCity': '',
+    'CustomerMailing.MailingZip': ''
+}
+response = s.post(url, data=data)
+#endregion
+
+#region Debugging
+# url = 'https://example.com'
+# response = requests.get(url, proxies={'http': 'http://127.0.0.1:8888', 'https':'http:127.0.0.1:8888'}, verify=r'FiddlerRoot.pem')
+#endregion

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 TD_ACCOUNT_NO = '012345678'
 LAST_FOUR_SSN = '1234'
 NAME = 'john smith'
